@@ -135,9 +135,9 @@ function SyncButton(){
     } finally{setLoading(false)}
   }
   return <div className="flex items-center gap-2">
-    <button onClick={doSync} disabled={loading} className="btn-primary flex items-center gap-2">
+    <button onClick={doSync} disabled={loading} className="btn-primary flex items-center gap-2" title="Supabase pooler puede tardar ~3m">
       {loading ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span> : <span>↻</span>}
-      {loading?"Sincronizando...":"Actualizar datos"}
+      {loading?"Sincronizando... (Supabase ~3m)":"Actualizar datos"}
     </button>
     {msg && <span className={`text-xs px-3 py-1.5 rounded-full font-medium hidden sm:inline ${msg.startsWith("OK") ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>{msg}</span>}
   </div>
