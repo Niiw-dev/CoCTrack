@@ -20,6 +20,22 @@ export default function Wars(){
     return copy
   },[wars, sort])
   const SortIcon = ({field})=> sort.field!==field ? <span className="text-zinc-300 ml-1">↕</span> : <span className="ml-1 text-violet-600">{sort.dir==='asc'?'↑':'↓'}</span>
+
+  const [detailSort, setDetailSort] = useState({field: null, dir: 'desc'})
+  const handleDetailSort = (field)=> setDetailSort(prev=> prev.field===field ? {field, dir: prev.dir==='asc'?'desc':'asc'} : {field, dir: field==='player_name'?'asc':'desc'})
+  const sortedParticipations = useMemo(()=>{
+    if(!detail?.participations) return []
+    if(!detailSort.field) return detail.participations
+    const mul = detailSort.dir==='asc'?1:-1
+    const copy=[...detail.participations]
+    if(detailSort.field==='player_name') copy.sort((a,b)=> (a.player_name||a.player_tag||'').localeCompare(b.player_name||b.player_tag||'')*mul)
+    else if(detailSort.field==='attacks_done') copy.sort((a,b)=> (a.attacks_done - b.attacks_done)*mul)
+    else if(detailSort.field==='attacks_expected') copy.sort((a,b)=> (a.attacks_expected - b.attacks_expected)*mul)
+    else if(detailSort.field==='stars') copy.sort((a,b)=> (a.stars - b.stars)*mul)
+    else if(detailSort.field==='estado') copy.sort((a,b)=> (Number(a.incumplio||0) - Number(b.incumplio||0))*mul)
+    return copy
+  },[detail, detailSort])
+  const DetailSortIcon = ({field})=> detailSort.field!==field ? <span className="text-zinc-300 ml-1">↕</span> : <span className="ml-1 text-violet-600">{detailSort.dir==='asc'?'↑':'↓'}</span>
   if(isLoading) return <div className="flex justify-center py-20"><div className="w-8 h-8 border-2 border-zinc-200 border-t-violet-600 rounded-full animate-spin"></div></div>
   return <div className="space-y-6">
     <div>
@@ -59,14 +75,29 @@ export default function Wars(){
         <button onClick={()=>setSel(null)} className="text-xs bg-zinc-100 hover:bg-zinc-200 px-3 py-1 rounded-full transition-colors">Cerrar ✕</button>
       </div>
       {detail.participations.length===0 ? <div className="text-sm text-zinc-500 mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">Sin datos per-jugador (warLog pasado sin members). Se llenará con syncs en inWar.</div> :
-        <div className="mt-4 overflow-auto rounded-xl border border-zinc-100">
-          <table className="w-full text-sm"><thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500"><tr><th className="p-3 text-left">Jugador</th><th className="p-3">Hechos</th><th className="p-3">Esperados</th><th className="p-3">Estrellas</th><th className="p-3">Estado</th></tr></thead>
-          <tbody className="divide-y divide-zinc-100">{detail.participations.map(p=> <tr key={p.player_tag} className="hover:bg-zinc-50/50">
-            <td className="p-3 flex items-center gap-2"><span className="font-mono text-xs bg-zinc-100 px-2 py-1 rounded-full border">{p.player_tag}</span><span className="font-medium">{p.player_name||"—"}</span></td>
-            <td className="p-3 text-center font-bold">{p.attacks_done}</td><td className="p-3 text-center text-zinc-500">{p.attacks_expected}</td><td className="p-3 text-center"><span className="bg-amber-100 text-amber-800 px-2 py-1 rounded-full text-xs font-bold">★ {p.stars}</span></td>
-            <td className="p-3 text-center"><span className={`badge border ${p.incumplio?'bg-red-50 text-red-700 border-red-200':'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>{p.incumplio?"Incumplió":"OK"}</span></td>
-          </tr>)}</tbody></table>
-        </div>
+        <>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-zinc-500 bg-zinc-50 border border-zinc-200 px-3 py-1.5 rounded-full hidden sm:inline">Click en cabecera para ordenar</span>
+            {detailSort.field && <>
+              <span className="text-xs bg-violet-50 border border-violet-200 text-violet-700 px-3 py-1.5 rounded-full">Orden: {detailSort.field} {detailSort.dir==='asc'?'↑':'↓'}</span>
+              <button onClick={()=>setDetailSort({field:null, dir:'desc'})} className="text-xs bg-violet-600 hover:bg-violet-700 text-white px-3 py-1.5 rounded-full font-medium">Limpiar orden ✕</button>
+            </>}
+          </div>
+          <div className="mt-3 overflow-auto rounded-xl border border-zinc-100">
+            <table className="w-full text-sm"><thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500"><tr>
+              <th onClick={()=>handleDetailSort('player_name')} className="p-3 text-left cursor-pointer hover:text-zinc-900 hover:bg-zinc-100 select-none">Jugador <DetailSortIcon field="player_name"/></th>
+              <th onClick={()=>handleDetailSort('attacks_done')} className="p-3 text-center cursor-pointer hover:text-zinc-900 hover:bg-zinc-100 select-none">Hechos <DetailSortIcon field="attacks_done"/></th>
+              <th onClick={()=>handleDetailSort('attacks_expected')} className="p-3 text-center cursor-pointer hover:text-zinc-900 hover:bg-zinc-100 select-none">Esperados <DetailSortIcon field="attacks_expected"/></th>
+              <th onClick={()=>handleDetailSort('stars')} className="p-3 text-center cursor-pointer hover:text-zinc-900 hover:bg-zinc-100 select-none">Estrellas <DetailSortIcon field="stars"/></th>
+              <th onClick={()=>handleDetailSort('estado')} className="p-3 text-center cursor-pointer hover:text-zinc-900 hover:bg-zinc-100 select-none">Estado <DetailSortIcon field="estado"/></th>
+            </tr></thead>
+            <tbody className="divide-y divide-zinc-100">{sortedParticipations.map(p=> <tr key={p.player_tag} className="hover:bg-zinc-50/50">
+              <td className="p-3 flex items-center gap-2"><span className="font-mono text-xs bg-zinc-100 px-2 py-1 rounded-full border">{p.player_tag}</span><span className="font-medium">{p.player_name||"—"}</span></td>
+              <td className="p-3 text-center font-bold">{p.attacks_done}</td><td className="p-3 text-center text-zinc-500">{p.attacks_expected}</td><td className="p-3 text-center"><span className="bg-amber-100 text-amber-800 px-2 py-1 rounded-full text-xs font-bold">★ {p.stars}</span></td>
+              <td className="p-3 text-center"><span className={`badge border ${p.incumplio?'bg-red-50 text-red-700 border-red-200':'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>{p.incumplio?"Incumplió":"OK"}</span></td>
+            </tr>)}</tbody></table>
+          </div>
+        </>
       }
     </div>}
   </div>
