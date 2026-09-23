@@ -1,0 +1,22 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  .font-mono { font-family: 'JetBrains Mono', monospace !important; }
+  html { @apply h-full w-full; }
+  body { @apply h-full w-full min-h-screen antialiased; }
+  #root { @apply min-h-screen w-full flex flex-col; }
+}
+
+@layer components {
+  .card { @apply bg-white rounded-2xl border border-zinc-200/60 shadow-[0_4px_24px_rgba(0,0,0,0.04)] backdrop-blur-sm; }
+  .card-hover { @apply hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:border-zinc-300/60 transition-all duration-300; }
+  .btn-primary { @apply bg-gradient-to-br from-violet-600 to-indigo-600 text-white rounded-xl px-4 py-2.5 text-sm font-semibold shadow-lg shadow-violet-600/20 hover:shadow-violet-600/30 hover:from-violet-700 hover:to-indigo-700 transition-all duration-200 disabled:opacity-50 disabled:shadow-none; }
+  .badge { @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium; }
+  .page-title { @apply text-2xl font-bold tracking-tight text-zinc-900; }
+  .page-subtitle { @apply text-sm text-zinc-500 mt-1; }
+}

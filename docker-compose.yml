@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: coctrack-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: coctrack
+      POSTGRES_USER: coctrack
+      POSTGRES_PASSWORD: coctrack
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coctrack"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  php:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: coctrack-php
+    restart: unless-stopped
+    volumes:
+      - ./backend:/var/www/html
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: coctrack
+      DB_USERNAME: coctrack
+      DB_PASSWORD: coctrack
+    ports:
+      - "8000:8000"
+    command: php artisan serve --host=0.0.0.0 --port=8000
+
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: coctrack-scheduler
+    restart: unless-stopped
+    volumes:
+      - ./backend:/var/www/html
+    depends_on:
+      postgres:
+        condition: service_healthy
+      php:
+        condition: service_started
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: coctrack
+      DB_USERNAME: coctrack
+      DB_PASSWORD: coctrack
+    command: php artisan schedule:work
+
+  nginx:
+    image: nginx:alpine
+    container_name: coctrack-nginx
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    volumes:
+      - ./backend:/var/www/html
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - php
+      - frontend
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: coctrack-frontend
+    restart: unless-stopped
+    ports:
+      - "5174:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    depends_on:
+      - php
+
+volumes:
+  pgdata:

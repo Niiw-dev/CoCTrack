@@ -1,0 +1,68 @@
+<?php
+
+use App\Services\SyncService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/health', fn()=> ['status'=>'ok','time'=>now()]);
+
+Route::post('/sync', function(Request $r, SyncService $svc){
+    $r->validate(['clanTag'=>'required|string|regex:/^#[0289CGJLOPQRUVY]+$/i']);
+    try {
+        $out = $svc->sync($r->clanTag);
+        if (($out['status']??'')==='throttled') return response()->json($out, 429);
+        return response()->json($out);
+    } catch (\Throwable $e){
+        return response()->json(['status'=>'ERROR','error'=>$e->getMessage()], 500);
+    }
+});
+
+Route::get('/clan', function(){
+    $snap = DB::table('clan_snapshots')->orderByDesc('synced_at')->first();
+    if (!$snap) return response()->json(['message'=>'Sin sincronización aún. Usa POST /api/sync'], 404);
+    $members = DB::table('member_snapshots')->where('clan_snapshot_id', $snap->id)->get();
+    return response()->json(['clan'=>$snap,'members'=>$members]);
+});
+
+Route::get('/members', function(Request $r){
+    $snap = DB::table('clan_snapshots')->orderByDesc('synced_at')->first();
+    if (!$snap) return response()->json([], 404);
+    $q = DB::table('member_snapshots')->where('clan_snapshot_id', $snap->id);
+    if ($r->player_tag) $q->where('player_tag', $r->player_tag);
+    return response()->json($q->get());
+});
+
+Route::get('/members/{tag}', function(string $tag){
+    $tag = str_replace('%23','#',$tag);
+    $history = DB::table('member_snapshots')->where('player_tag',$tag)->orderByDesc('created_at')->limit(30)->get();
+    $warnings = DB::table('warnings')->where('player_tag',$tag)->orderByDesc('created_at')->get();
+    $alerts = DB::table('alerts')->where('player_tag',$tag)->orderByDesc('created_at')->limit(20)->get();
+    return response()->json(['tag'=>$tag,'history'=>$history,'warnings'=>$warnings,'alerts'=>$alerts]);
+})->where('tag','.*');
+
+Route::get('/dashboard', function(){
+    $snap = DB::table('clan_snapshots')->orderByDesc('synced_at')->first();
+    $lastSync = DB::table('sync_logs')->orderByDesc('started_at')->first();
+    $alerts = DB::table('alerts')->where('vista',false)->orderByDesc('created_at')->limit(5)->get();
+    return response()->json(['clan_snapshot'=>$snap,'last_sync'=>$lastSync,'alerts'=>$alerts]);
+});
+
+Route::get('/rotation', function(Request $r, \App\Services\RotationService $svc){
+    $r->validate(['teamSize'=>'integer|in:5,10,15,20,25,30,50']);
+    $teamSize = (int)($r->teamSize ?? 15);
+    $snap = DB::table('clan_snapshots')->orderByDesc('synced_at')->first();
+    if (!$snap) return response()->json(['error'=>'Sin datos'],404);
+    $members = DB::table('member_snapshots')->where('clan_snapshot_id',$snap->id)->get()->map(fn($m)=>[
+        'tag'=>$m->player_tag,'name'=>$m->player_name,'consecutive'=>rand(0,4),'wars_without_play'=>rand(0,6),
+        'last_war_at'=>now()->subDays(rand(0,10))->toDateString(),'war_preference'=>'IN','recent_fails'=>rand(0,1)
+    ]);
+    return response()->json($svc->propose($members, $teamSize));
+});
+
+Route::get('/rules', fn()=> DB::table('rules')->get());
+Route::get('/sync-logs', fn()=> DB::table('sync_logs')->orderByDesc('started_at')->limit(20)->get());
+Route::get('/wars', fn()=> DB::table('wars')->orderByDesc('end_time')->limit(20)->get());
+Route::get('/capital-seasons', fn()=> DB::table('capital_seasons')->orderByDesc('start_time')->limit(10)->get());
+Route::get('/alerts', fn(Request $r)=> DB::table('alerts')->when($r->tipo, fn($q,$t)=>$q->where('tipo',$t))->orderByDesc('created_at')->limit($r->limit ?? 100)->get());
+Route::get('/warnings', fn(Request $r)=> DB::table('warnings')->when($r->player_tag, fn($q,$t)=>$q->where('player_tag',$t))->orderByDesc('created_at')->limit($r->limit ?? 100)->get());
