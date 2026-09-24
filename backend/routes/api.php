@@ -54,6 +54,25 @@ Route::get('/members/{tag}', function(string $tag){
         ->orderByDesc('capital_seasons.start_time')->limit(10)
         ->select('capital_participations.*','capital_seasons.start_time','capital_seasons.end_time','capital_seasons.state as season_state')
         ->get();
+    // CWL history
+    $cwlHistory = collect();
+    $clanGameHistory = collect();
+    if (\Illuminate\Support\Facades\Schema::hasTable('cwl_participations')) {
+        $cwlHistory = DB::table('cwl_participations')
+            ->join('cwl_wars','cwl_wars.id','=','cwl_participations.cwl_war_id')
+            ->where('cwl_participations.player_tag',$tag)
+            ->orderByDesc('cwl_wars.end_time')->limit(10)
+            ->select('cwl_participations.*','cwl_wars.end_time','cwl_wars.state','cwl_wars.war_tag')
+            ->get();
+    }
+    if (\Illuminate\Support\Facades\Schema::hasTable('clan_game_participations')) {
+        $clanGameHistory = DB::table('clan_game_participations')
+            ->join('clan_game_seasons','clan_game_seasons.id','=','clan_game_participations.season_id')
+            ->where('clan_game_participations.player_tag',$tag)
+            ->orderByDesc('clan_game_seasons.start_time')->limit(10)
+            ->select('clan_game_participations.*','clan_game_seasons.start_time','clan_game_seasons.end_time','clan_game_seasons.name','clan_game_seasons.points_required','clan_game_seasons.state as season_state')
+            ->get();
+    }
     $stats = [
         'wars_entered'=>$warHistory->count(),
         'wars_with_attack'=>$warHistory->where('attacks_done','>',0)->count(),
@@ -61,8 +80,40 @@ Route::get('/members/{tag}', function(string $tag){
         'stars_total'=> $warHistory->sum('stars'),
         'capital_total'=>$capitalHistory->sum('attacks'),
         'capital_cumplidas'=>$capitalHistory->where('cumplio',true)->count(),
+        'cwl_total'=> $cwlHistory->count(),
+        'cwl_with_attack'=> $cwlHistory->where('attacks_done','>',0)->count(),
+        'clan_games_total'=> $clanGameHistory->count(),
+        'clan_games_cumplidas'=> $clanGameHistory->where('cumplio',true)->count(),
+        'clan_games_points'=> $clanGameHistory->sum('points'),
     ];
-    return response()->json(['tag'=>$tag,'player_name'=>$history->first()?->player_name,'history'=>$history,'warnings'=>$warnings,'alerts'=>$alerts,'state'=>$state,'war_history'=>$warHistory,'capital_history'=>$capitalHistory,'stats'=>$stats]);
+    // last activity unified (max de 5 con fallback warStars)
+    $lastWarStarsAt = null;
+    if (\Illuminate\Support\Facades\Schema::hasColumn('member_snapshots','war_stars')) {
+        try {
+            $histStars = DB::table('member_snapshots')->where('player_tag',$tag)->orderByDesc('created_at')->limit(20)->get(['war_stars','created_at']);
+            for ($i=0; $i < $histStars->count()-1; $i++) {
+                if ((int)($histStars[$i]->war_stars ?? 0) > (int)($histStars[$i+1]->war_stars ?? 0)) { $lastWarStarsAt = $histStars[$i]->created_at; break; }
+            }
+        } catch (\Throwable $e) {}
+    }
+    $lastActivityDates = collect([
+        $warHistory->where('attacks_done','>',0)->max('end_time'),
+        $cwlHistory->where('attacks_done','>',0)->max('end_time'),
+        $capitalHistory->where('attacks','>',0)->max('end_time') ?? $capitalHistory->where('attacks','>',0)->max('start_time'),
+        $clanGameHistory->where('points','>',0)->max('end_time') ?? $clanGameHistory->where('points','>',0)->max('start_time'),
+        $lastWarStarsAt,
+    ])->filter()->map(fn($d)=> \Carbon\Carbon::parse($d))->filter();
+    $daysInactive = null;
+    if ($lastActivityDates->isNotEmpty()) {
+        $lastActivity = $lastActivityDates->max();
+        $daysInactive = \Carbon\Carbon::now()->diffInDays($lastActivity, false);
+        $daysInactive = abs($daysInactive);
+    } else {
+        // fallback a ingreso si nunca tuvo actividad
+        $firstSnap = $history->last()?->created_at ?? null;
+        if ($firstSnap) $daysInactive = abs(\Carbon\Carbon::now()->diffInDays(\Carbon\Carbon::parse($firstSnap), false));
+    }
+    return response()->json(['tag'=>$tag,'player_name'=>$history->first()?->player_name,'history'=>$history,'warnings'=>$warnings,'alerts'=>$alerts,'state'=>$state,'war_history'=>$warHistory,'capital_history'=>$capitalHistory,'cwl_history'=>$cwlHistory,'clan_game_history'=>$clanGameHistory,'stats'=>$stats,'days_inactive'=>$daysInactive]);
 })->where('tag','.*');
 
 Route::get('/dashboard', function(){
@@ -148,4 +199,104 @@ Route::get('/cwl/groups/{id}', function(int $id){
     // parse rounds from raw_json for convenience
     $raw = json_decode($g->raw_json ?? '{}', true);
     return response()->json(['group'=>$g,'wars'=>$wars,'raw'=>$raw]);
+});
+
+// --- Clan Games: Juegos del Clan (manual, no API oficial) ---
+Route::get('/clan-games', function(){
+    if (!\Illuminate\Support\Facades\Schema::hasTable('clan_game_seasons')) return response()->json([]);
+    return DB::table('clan_game_seasons')->orderByDesc('start_time')->limit(20)->get();
+});
+Route::post('/clan-games', function(Request $r){
+    if (!\Illuminate\Support\Facades\Schema::hasTable('clan_game_seasons')) return response()->json(['error'=>'Migración pendiente'], 500);
+    $r->validate([
+        'start_time'=>'required|date',
+        'end_time'=>'nullable|date|after:start_time',
+        'name'=>'nullable|string|max:100',
+        'state'=>'nullable|string|max:30',
+        'points_required'=>'nullable|integer|min:100|max:10000',
+        'max_points'=>'nullable|integer|min:100|max:10000',
+        'participations'=>'nullable|array',
+        'participations.*.player_tag'=>'required_with:participations|string|regex:/^#[0289CGJLOPQRUVY]+$/i',
+        'participations.*.points'=>'required_with:participations|integer|min:0|max:10000',
+        'participations.*.tasks_completed'=>'nullable|integer|min:0|max:100',
+    ]);
+    $start = \Carbon\Carbon::parse($r->start_time);
+    $exists = DB::table('clan_game_seasons')->where('start_time',$start)->first();
+    if ($exists) return response()->json(['error'=>'Ya existe temporada con ese start_time','id'=>$exists->id], 409);
+    $seasonId = DB::table('clan_game_seasons')->insertGetId([
+        'start_time'=>$start,
+        'end_time'=> $r->end_time ? \Carbon\Carbon::parse($r->end_time) : $start->copy()->addDays(7),
+        'name'=> $r->name ?? 'Juegos '. $start->format('Y-m'),
+        'state'=> $r->state ?? 'ended',
+        'points_required'=> $r->points_required ?? 4000,
+        'max_points'=> $r->max_points ?? 4000,
+        'total_points'=> 0,
+        'raw_json'=> json_encode($r->all()),
+        'created_at'=>now(),'updated_at'=>now(),
+    ]);
+    $inserted = 0;
+    foreach (($r->participations ?? []) as $p) {
+        $pts = (int)($p['points'] ?? 0);
+        $req = (int)($r->points_required ?? 4000);
+        DB::table('clan_game_participations')->updateOrInsert(
+            ['season_id'=>$seasonId,'player_tag'=>$p['player_tag']],
+            [
+                'points'=>$pts,
+                'tasks_completed'=>$p['tasks_completed'] ?? 0,
+                'cumplio'=> $pts >= $req,
+                'updated_at'=>now(),'created_at'=>now(),
+            ]
+        );
+        $inserted++;
+    }
+    if ($inserted) {
+        DB::table('clan_game_seasons')->where('id',$seasonId)->update(['total_points'=> DB::table('clan_game_participations')->where('season_id',$seasonId)->sum('points')]);
+    }
+    $season = DB::table('clan_game_seasons')->find($seasonId);
+    return response()->json(['season'=>$season,'participations_inserted'=>$inserted], 201);
+});
+Route::get('/clan-games/{id}', function(int $id){
+    if (!\Illuminate\Support\Facades\Schema::hasTable('clan_game_seasons')) return response()->json(['error'=>'Migración pendiente'], 500);
+    $s = DB::table('clan_game_seasons')->find($id);
+    if (!$s) return response()->json(['error'=>'No encontrado'],404);
+    $parts = DB::table('clan_game_participations')
+        ->leftJoin('member_snapshots','member_snapshots.player_tag','=','clan_game_participations.player_tag')
+        ->where('clan_game_participations.season_id',$id)
+        ->select('clan_game_participations.*','member_snapshots.player_name')
+        ->distinct()->get()->unique('player_tag')->values()
+        ->map(fn($p)=> (array)$p + ['player_name'=>$p->player_name ?? $p->player_tag]);
+    return response()->json(['season'=>$s,'participations'=>$parts]);
+});
+Route::post('/clan-games/{id}/participations', function(Request $r, int $id){
+    if (!\Illuminate\Support\Facades\Schema::hasTable('clan_game_participations')) return response()->json(['error'=>'Migración pendiente'], 500);
+    $s = DB::table('clan_game_seasons')->find($id);
+    if (!$s) return response()->json(['error'=>'Temporada no encontrada'],404);
+    $r->validate([
+        'participations'=>'required|array|min:1',
+        'participations.*.player_tag'=>'required|string|regex:/^#[0289CGJLOPQRUVY]+$/i',
+        'participations.*.points'=>'required|integer|min:0|max:10000',
+        'participations.*.tasks_completed'=>'nullable|integer|min:0|max:100',
+    ]);
+    $count=0;
+    foreach ($r->participations as $p) {
+        DB::table('clan_game_participations')->updateOrInsert(
+            ['season_id'=>$id,'player_tag'=>$p['player_tag']],
+            [
+                'points'=>(int)$p['points'],
+                'tasks_completed'=>$p['tasks_completed'] ?? 0,
+                'cumplio'=> (int)$p['points'] >= $s->points_required,
+                'updated_at'=>now(),'created_at'=>now(),
+            ]
+        );
+        $count++;
+    }
+    DB::table('clan_game_seasons')->where('id',$id)->update(['total_points'=> DB::table('clan_game_participations')->where('season_id',$id)->sum('points'),'updated_at'=>now()]);
+    return response()->json(['ok'=>true,'inserted'=>$count]);
+});
+Route::delete('/clan-games/{id}', function(int $id){
+    if (!\Illuminate\Support\Facades\Schema::hasTable('clan_game_seasons')) return response()->json(['error'=>'Migración pendiente'], 500);
+    $s = DB::table('clan_game_seasons')->find($id);
+    if (!$s) return response()->json(['error'=>'No encontrado'],404);
+    DB::table('clan_game_seasons')->where('id',$id)->delete();
+    return response()->json(['ok'=>true]);
 });

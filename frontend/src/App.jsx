@@ -9,6 +9,7 @@ import Rules from "./pages/Rules.jsx"
 import Alerts from "./pages/Alerts.jsx"
 import MemberDetail from "./pages/MemberDetail.jsx"
 import CWL from "./pages/CWL.jsx"
+import ClanGames from "./pages/ClanGames.jsx"
 import { useState } from "react"
 
 function Layout({children}){
@@ -21,6 +22,7 @@ function Layout({children}){
     ["/rotacion","Rotación","⟡"],
     ["/capital","Capital","◆"],
     ["/cwl","CWL","♜"],
+    ["/juegos","Juegos","🎮"],
     ["/historial","Historial","◎"],
     ["/reglas","Reglas","≡"],
     ["/alertas","Alertas","⚑"],
@@ -128,16 +130,18 @@ function SyncButton(){
       setTimeout(()=>setMsg(null),4000)
     }catch(e){
       const d=e.response?.data
-      if(e.response?.status===429) setMsg("Espera "+ (d?.wait_minutes??10)+"m")
+      if(e.response?.status===429) setMsg("Espera "+ Math.ceil(Number(d?.wait_minutes??10))+"m")
+      else if(e.response?.status===504) setMsg("Timeout 504 — sync sigue en curso ~4m, recarga en 1m")
+      else if(e.code==="ECONNABORTED" || e.message?.includes("timeout")) setMsg("Timeout — sync sigue en curso ~4m, recarga en 1m")
       else if(d?.error) setMsg(d.error)
       else if(d?.message) setMsg(d.message)
       else setMsg(e.message||"Error")
     } finally{setLoading(false)}
   }
   return <div className="flex items-center gap-2">
-    <button onClick={doSync} disabled={loading} className="btn-primary flex items-center gap-2" title="Supabase pooler puede tardar ~3m">
+    <button onClick={doSync} disabled={loading} className="btn-primary flex items-center gap-2" title="Supabase pooler puede tardar ~4-5m">
       {loading ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span> : <span>↻</span>}
-      {loading?"Sincronizando... (Supabase ~3m)":"Actualizar datos"}
+      {loading?"Sincronizando... (Supabase ~4-5m)":"Actualizar datos"}
     </button>
     {msg && <span className={`text-xs px-3 py-1.5 rounded-full font-medium hidden sm:inline ${msg.startsWith("OK") ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>{msg}</span>}
   </div>
@@ -153,6 +157,7 @@ export default function App(){
       <Route path="/rotacion" element={<Rotation/>}/>
       <Route path="/capital" element={<Capital/>}/>
       <Route path="/cwl" element={<CWL/>}/>
+      <Route path="/juegos" element={<ClanGames/>}/>
       <Route path="/historial" element={<History/>}/>
       <Route path="/reglas" element={<Rules/>}/>
       <Route path="/alertas" element={<Alerts/>}/>

@@ -21,7 +21,7 @@ class RuleEngineTest extends TestCase
         $now = Carbon::now();
         $player = ['name' => 'Test', 'tag' => '#ABC'];
 
-        $r3 = $this->engine->evaluatePlayer($player, ['last_war_attack_at' => $now->copy()->subDays(3)->toIso8601String(), 'ingreso_at' => $now->copy()->subDays(30)->toIso8601String()]);
+        $r3 = $this->engine->evaluatePlayer($player, ['last_war_attack_at' => $now->copy()->subDays(4)->toIso8601String(), 'ingreso_at' => $now->copy()->subDays(30)->toIso8601String()]);
         $this->assertCount(1, $r3['alerts']);
         $this->assertEquals('OBSERVACION', $r3['alerts'][0]['type']);
 
@@ -29,7 +29,7 @@ class RuleEngineTest extends TestCase
         $this->assertEquals('EN_RIESGO', $r6['alerts'][0]['type']);
 
         $r9 = $this->engine->evaluatePlayer($player, ['last_war_attack_at' => $now->copy()->subDays(9)->toIso8601String(), 'ingreso_at' => $now->copy()->subDays(30)->toIso8601String()]);
-        $this->assertEquals('INACTIVIDAD_GUERRA_CAPITAL', $r9['alerts'][0]['type']);
+        $this->assertEquals('INACTIVIDAD_GENERAL', $r9['alerts'][0]['type']);
         $this->assertEquals('INACTIVITY_9', $r9['warnings'][0]['regla']);
     }
 

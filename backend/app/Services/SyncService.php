@@ -6,6 +6,7 @@ use App\Clients\CocClient;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class SyncService
 {
@@ -26,8 +27,13 @@ class SyncService
             Cache::forget('last_sync_at');
             return ['allowed'=>true,'wait'=>0];
         }
-        $elapsed = now()->diffInMinutes($lastAt);
-        if ($elapsed < $cooldownMinutes) return ['allowed'=>false,'wait'=> $cooldownMinutes - $elapsed];
+        // Carbon 3: diffInMinutes sin segundo parámetro es signed; usamos absoluto
+        $elapsedSeconds = $lastAt->diffInSeconds(now(), true);
+        $elapsed = $elapsedSeconds / 60.0;
+        if ($elapsed < $cooldownMinutes) {
+            $wait = (int) ceil($cooldownMinutes - $elapsed);
+            return ['allowed'=>false,'wait'=> $wait];
+        }
         return ['allowed'=>true,'wait'=>0];
     }
 
@@ -151,7 +157,7 @@ class SyncService
                 } catch (\Throwable $e) { Log::warning('persist capital failed', ['err'=>$e->getMessage()]); }
             }
 
-            // --- Persist CWL ---
+            // --- Persist CWL + cwl_participations ---
             $cwlInserted = 0;
             if (!empty($leagueGroup) && isset($leagueGroup['tag'])) {
                 try {
@@ -180,6 +186,23 @@ class SyncService
                                         'updated_at'=>now(),'created_at'=>now(),
                                     ]
                                 );
+                                $cwlWarId = DB::table('cwl_wars')->where('war_tag',$wt)->value('id');
+                                // persist participations CWL (ambos clanes, luego se filtra por member)
+                                if ($cwlWarId) {
+                                    $allMembers = array_merge($war['clan']['members'] ?? [], $war['opponent']['members'] ?? []);
+                                    foreach ($allMembers as $cm) {
+                                        if (!isset($cm['tag'])) continue;
+                                        DB::table('cwl_participations')->updateOrInsert(
+                                            ['cwl_war_id'=>$cwlWarId, 'player_tag'=>$cm['tag']],
+                                            [
+                                                'attacks_done'=> count($cm['attacks'] ?? []),
+                                                'stars'=> array_sum(array_column($cm['attacks'] ?? [], 'stars')),
+                                                'destruction'=> count($cm['attacks'] ?? []) ? array_sum(array_column($cm['attacks'], 'destructionPercentage'))/count($cm['attacks']) : 0,
+                                                'updated_at'=>now(),'created_at'=>now(),
+                                            ]
+                                        );
+                                    }
+                                }
                                 $cwlInserted++;
                             } catch (\Throwable $e) { Log::warning('cwl war fetch failed', ['tag'=>$wt, 'err'=>$e->getMessage()]); }
                         }
@@ -201,6 +224,7 @@ class SyncService
 
             foreach ($members as $m) {
                 $pPref = $players[$m['tag']]['warPreference'] ?? 'in';
+                $pData = $players[$m['tag']] ?? [];
                 DB::table('member_snapshots')->insert([
                     'clan_snapshot_id'=>$snapshotId,
                     'player_tag'=>$m['tag'],
@@ -211,6 +235,10 @@ class SyncService
                     'donations'=>$m['donations'] ?? 0,
                     'donations_received'=>$m['donationsReceived'] ?? 0,
                     'war_preference'=>$pPref,
+                    'war_stars'=>$pData['warStars'] ?? 0,
+                    'attack_wins'=>$pData['attackWins'] ?? 0,
+                    'exp_level'=>$pData['expLevel'] ?? 0,
+                    'capital_contributions'=>$pData['clanCapitalContributions'] ?? 0,
                     'created_at'=>$started,
                     'updated_at'=>$started,
                 ]);
@@ -219,8 +247,12 @@ class SyncService
             // --- RuleEngine: generar warnings/alerts ---
             $engine = new \App\Services\RuleEngine();
             $alertsInserted = 0; $warningsInserted = 0;
-            // última season capital para ctx
+            // última season capital y juegos para ctx
             $lastSeason = DB::table('capital_seasons')->orderByDesc('start_time')->first();
+            $lastGameSeason = null;
+            if (Schema::hasTable('clan_game_seasons')) {
+                $lastGameSeason = DB::table('clan_game_seasons')->orderByDesc('start_time')->first();
+            }
             foreach ($members as $m) {
                 $pTag = $m['tag'];
                 $pData = $players[$pTag] ?? ['name'=>$m['name']];
@@ -230,6 +262,13 @@ class SyncService
                     $cp = DB::table('capital_participations')->where('season_id',$lastSeason->id)->where('player_tag',$pTag)->first();
                     if ($cp) $capCtx = ['attacks'=>$cp->attacks];
                     else $capCtx = ['attacks'=>0]; // no participó = 0/5
+                }
+                // juegos ctx para este jugador (última temporada)
+                $gameCtx = null;
+                if ($lastGameSeason) {
+                    $gp = DB::table('clan_game_participations')->where('season_id',$lastGameSeason->id)->where('player_tag',$pTag)->first();
+                    if ($gp) $gameCtx = ['points'=>$gp->points,'cumplio'=>$gp->cumplio, 'required'=>$lastGameSeason->points_required];
+                    else $gameCtx = ['points'=>0,'cumplio'=>false,'required'=>$lastGameSeason->points_required];
                 }
                 // tiempo conexión / ingreso / guerra / capital (petición: ignorar donaciones/trofeos)
                 // ingreso real: solo si no estaba en snapshot previo (recién llegado), no MIN histórico corto
@@ -242,12 +281,48 @@ class SyncService
                     ->where('war_participations.player_tag',$pTag)->where('war_participations.attacks_done','>',0)
                     ->orderByDesc('wars.end_time')->first();
                 $lastWarAt = $lastWar->end_time ?? null;
+                // última CWL con ataques
+                $lastCwl = null;
+                if (Schema::hasTable('cwl_participations')) {
+                    $lastCwl = DB::table('cwl_participations')
+                        ->join('cwl_wars','cwl_wars.id','=','cwl_participations.cwl_war_id')
+                        ->where('cwl_participations.player_tag',$pTag)->where('cwl_participations.attacks_done','>',0)
+                        ->orderByDesc('cwl_wars.end_time')->first();
+                }
+                $lastCwlAt = $lastCwl->end_time ?? null;
                 // última capital con ataques
                 $lastCap = DB::table('capital_participations')
                     ->join('capital_seasons','capital_seasons.id','=','capital_participations.season_id')
                     ->where('capital_participations.player_tag',$pTag)->where('capital_participations.attacks','>',0)
                     ->orderByDesc('capital_seasons.end_time')->first();
                 $lastCapAt = $lastCap->end_time ?? null;
+                // últimos Juegos del Clan con puntos >0
+                $lastGameAt = null; $lastGamePoints = null;
+                if (Schema::hasTable('clan_game_participations')) {
+                    $lastGame = DB::table('clan_game_participations')
+                        ->join('clan_game_seasons','clan_game_seasons.id','=','clan_game_participations.season_id')
+                        ->where('clan_game_participations.player_tag',$pTag)->where('clan_game_participations.points','>',0)
+                        ->orderByDesc('clan_game_seasons.end_time')->orderByDesc('clan_game_seasons.start_time')->first();
+                    $lastGameAt = $lastGame->end_time ?? $lastGame->start_time ?? null;
+                    $lastGamePoints = $lastGame->points ?? null;
+                }
+                // Fallback warStars: detecta actividad guerra/CWL aunque no se capturó inWar (no requiere docker levantado)
+                $lastWarStarsAt = null;
+                if (Schema::hasColumn('member_snapshots','war_stars')) {
+                    try {
+                        $historyStars = DB::table('member_snapshots')
+                            ->where('player_tag',$pTag)
+                            ->orderByDesc('created_at')
+                            ->limit(20)
+                            ->get(['war_stars','created_at']);
+                        for ($i=0; $i < $historyStars->count()-1; $i++) {
+                            $curr = (int)($historyStars[$i]->war_stars ?? 0);
+                            $prev = (int)($historyStars[$i+1]->war_stars ?? 0);
+                            if ($curr > $prev) { $lastWarStarsAt = $historyStars[$i]->created_at; break; }
+                        }
+                        // si solo hay 1 snapshot y tiene war_stars >0, no podemos saber delta, pero no lo usamos como actividad (evita falsos positivos ingreso)
+                    } catch (\Throwable $e) { /* columna aún no migrada en esta transacción */ }
+                }
                 // historial guerras pasadas: solo guerras terminadas con datos reales
                 $warsTotal = DB::table('wars')->where('state','warEnded')->count();
                 $warsWithAttack = DB::table('war_participations')->join('wars','wars.id','=','war_participations.war_id')->where('wars.state','warEnded')->where('war_participations.player_tag',$pTag)->where('war_participations.attacks_done','>',0)->count();
@@ -270,7 +345,11 @@ class SyncService
                 $ctx = [
                     'last_activity_at'=>null,
                     'last_war_attack_at'=>$lastWarAt,
+                    'last_cwl_attack_at'=>$lastCwlAt,
                     'last_capital_attack_at'=>$lastCapAt,
+                    'last_clan_game_at'=>$lastGameAt,
+                    'last_clan_game_points'=>$lastGamePoints,
+                    'last_war_stars_at'=>$lastWarStarsAt,
                     'ingreso_at'=>$ingresoAt,
                     'is_new'=>!$wasInPrev,
                     'wars_total'=>$warsTotal,
@@ -281,6 +360,7 @@ class SyncService
                     'wars_participations_total'=>$warsParticipationsTotal,
                     'last_entered_at'=>$lastEnteredAt,
                     'capital_last_season'=>$capCtx,
+                    'clan_game_last_season'=>$gameCtx,
                     'current_war'=>$currentWar,
                     'attacks_done'=>$attacksDone,
                     'attacks_expected'=>$attacksExp,

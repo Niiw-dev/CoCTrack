@@ -6,30 +6,36 @@ use Carbon\Carbon;
 
 class RuleEngine
 {
-    // §19-20: 3d->🟡,6d->🔴,9d->⚫ ; capital 5/5 ; vencimiento 30/60/90
+    // §19-20: 4d->🟡,6d->🔴,9d->⚫ ; capital 5/5 ; vencimiento 30/60/90
     public function evaluatePlayer(array $player, array $ctx): array
     {
         $alerts = []; $warnings = [];
         $now = Carbon::now();
 
-        // Inactividad por tiempo de conexión (última guerra/capital) + ingreso
-        $lastActivity = null;
-        if (!empty($ctx['last_war_attack_at'])) $lastActivity = Carbon::parse($ctx['last_war_attack_at']);
-        elseif (!empty($ctx['last_capital_attack_at'])) $lastActivity = Carbon::parse($ctx['last_capital_attack_at']);
-        elseif (!empty($ctx['last_activity_at'])) $lastActivity = Carbon::parse($ctx['last_activity_at']);
+        // Inactividad unificada: guerra / CWL / capital / juegos / warStars delta — cualquiera resetea contador 4d
+        // last_war_stars_at es fallback cuando docker estuvo apagado y no se capturó inWar (delta warStars)
+        $candidates = [];
+        foreach (['last_war_attack_at','last_cwl_attack_at','last_capital_attack_at','last_clan_game_at','last_war_stars_at','last_activity_at'] as $k) {
+            if (!empty($ctx[$k])) {
+                try { $candidates[] = Carbon::parse($ctx[$k]); } catch (\Throwable $e) {}
+            }
+        }
+        $lastActivity = !empty($candidates) ? max($candidates) : null; // Carbon comparable via max (latest)
         // ingreso
         $daysSinceIngreso = isset($ctx['ingreso_at']) ? abs($now->diffInDays(Carbon::parse($ctx['ingreso_at']), false)) : 999;
-        // si no hay guerra/capital, usa ingreso como fallback para tiempo de conexión (solo guerra/capital)
+        // si no hay actividad en ningún de los 4, usa ingreso como fallback
         $daysInactive = $lastActivity ? abs($now->diffInDays($lastActivity, false)) : $daysSinceIngreso;
         // cada motivo es independiente (no combinado con ingreso)
         if ($daysInactive >= 9) {
-            $alerts[] = ['type'=>'INACTIVIDAD_GUERRA_CAPITAL','severity'=>'CRITICA','msg'=>"{$player['name']} 9d sin ataques guerra/capital — proponer expulsión"];
-            $warnings[] = ['severidad'=>'MEDIA','motivo'=>'Inactividad 9d guerra/capital','regla'=>'INACTIVITY_9'];
+            $alerts[] = ['type'=>'INACTIVIDAD_GENERAL','severity'=>'CRITICA','msg'=>"{$player['name']} 9d sin actividad (guerra/CWL/capital/juegos) — proponer expulsión"];
+            $warnings[] = ['severidad'=>'MEDIA','motivo'=>'Inactividad 9d sin actividad en ninguna modalidad','regla'=>'INACTIVITY_9'];
         } elseif ($daysInactive >= 6) {
-            $alerts[] = ['type'=>'EN_RIESGO','severity'=>'ALTA','msg'=>"{$player['name']} 6d sin ataques guerra/capital"];
-        } elseif ($daysInactive >= 3) {
-            $alerts[] = ['type'=>'OBSERVACION','severity'=>'MEDIA','msg'=>"{$player['name']} 3d sin ataques guerra/capital"];
+            $alerts[] = ['type'=>'EN_RIESGO','severity'=>'ALTA','msg'=>"{$player['name']} 6d sin actividad (guerra/CWL/capital/juegos)"];
+        } elseif ($daysInactive >= 4) {
+            $alerts[] = ['type'=>'OBSERVACION','severity'=>'MEDIA','msg'=>"{$player['name']} 4d sin actividad (guerra/CWL/capital/juegos)"];
         }
+        // compatibilidad: mantener tipo antiguo si alguien filtra por él, pero ya no se genera
+        // INACTIVIDAD_GUERRA_CAPITAL deprecated -> INACTIVIDAD_GENERAL
         // ingreso reciente solo si realmente es nuevo (no estaba en snapshot previo)
         if (!empty($ctx['is_new']) && $daysSinceIngreso < 3) {
             $alerts[] = ['type'=>'INGRESO_RECIENTE','severity'=>'LEVE','msg'=>"{$player['name']} es nuevo"];
@@ -43,6 +49,17 @@ class RuleEngine
             }
             if (isset($c['capitalResourcesLooted']) && $c['capitalResourcesLooted'] == 0 && ($c['attacks'] ?? 0) > 0) {
                 $alerts[] = ['type'=>'CAPITAL_MEJORA','severity'=>'MEDIA','msg'=>"Atacó capital sin aporte a mejoras"];
+            }
+        }
+
+        // Juegos del Clan: mínimo puntos requeridos (por defecto 4000)
+        if (isset($ctx['clan_game_last_season'])) {
+            $g = $ctx['clan_game_last_season'];
+            $pts = $g['points'] ?? 0;
+            $req = $g['required'] ?? 4000;
+            if ($pts < $req) {
+                // No bloquea inactividad general, pero genera alerta específica
+                $alerts[] = ['type'=>'JUEGOS','severity'=>'MEDIA','msg'=>"No cumplió juegos: {$pts}/{$req} puntos"];
             }
         }
 
