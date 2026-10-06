@@ -25,7 +25,10 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend:/var/www/html
-    env_file: ./backend/.env
+    # sin env_file: Laravel lee ./backend/.env (montado) en cada arranque.
+    # Con env_file, el contenedor inyecta las variables al crearse y quedan "pegadas":
+    # un cambio en .env no aplicaba hasta recrear el contenedor, y las pruebas
+    # (phpunit.xml) heredaban DB_* de producción.
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,7 +44,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend:/var/www/html
-    env_file: ./backend/.env
     depends_on:
       postgres:
         condition: service_healthy
